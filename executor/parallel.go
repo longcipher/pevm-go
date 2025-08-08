@@ -102,6 +102,9 @@ type ParallelExecutor struct {
 	// Resource management
 	resourceMgr ResourceManager
 
+	// Storage provider (pluggable)
+	storageProvider StorageProvider
+
 	// Statistics
 	stats           ExecutorStats
 	statsLastUpdate time.Time
@@ -331,12 +334,13 @@ func (pe *ParallelExecutor) executeTask(worker *Worker, task common.Task) {
 
 // createStorageView creates a storage view for task execution.
 func (pe *ParallelExecutor) createStorageView(task common.Task) storage.Storage {
-	// For now, return a simple storage implementation
-	// In a real implementation, this would create a view specific to the task's execution context
-	return storage.NewLockFreeStorage(storage.Config{
-		BucketCount: 1024,
-		GCThreshold: 10000,
-	})
+	if pe.storageProvider != nil {
+		if s := pe.storageProvider.ViewFor(task); s != nil {
+			return s
+		}
+	}
+	// Fallback simple storage implementation
+	return storage.NewLockFreeStorage(storage.Config{BucketCount: 1024, GCThreshold: 10000})
 }
 
 // selectExecutor selects the appropriate executor for a task.
@@ -344,6 +348,16 @@ func (pe *ParallelExecutor) selectExecutor(task common.Task) Executor {
 	// For now, return a default executor
 	// In a real implementation, this would select based on task type
 	return &DefaultExecutor{}
+}
+
+// StorageProvider allows decoupled provision of per-task storage views.
+type StorageProvider interface {
+	ViewFor(task common.Task) storage.Storage
+}
+
+// SetStorageProvider sets the storage provider for per-task storage views.
+func (pe *ParallelExecutor) SetStorageProvider(sp StorageProvider) {
+	pe.storageProvider = sp
 }
 
 // extractDependency extracts dependency information from an error.

@@ -19,6 +19,18 @@ pevm-go/
 ├── common/           # Shared types and interfaces
 ├── storage/          # Multi-version storage implementations
 ├── scheduler/        # Task scheduling and dependency management
+
+## BALs-inspired access planning and storage views
+
+- Access planning: `access.AccessOracle` + `access.Planner` partition tasks and inject extra deps to minimize conflicts (BlockSTM-inspired).
+- Provide BALs/EIP-2930 access lists via `access.FromEIP2930` and set with `engine.ParallelEngine.SetAccessOracle`.
+- Executor storage: implement `executor.StorageProvider` to supply per-task storage views; the executor falls back to lock-free storage if not set.
+
+Run tests:
+
+```bash
+go test ./...
+```
 ├── executor/         # Parallel execution workers
 ├── validation/       # Conflict detection and validation
 ├── engine/           # Main orchestration engine

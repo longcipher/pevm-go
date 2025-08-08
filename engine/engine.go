@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/longcipher/pevm-go/access"
 	"github.com/longcipher/pevm-go/common"
 	"github.com/longcipher/pevm-go/executor"
 	"github.com/longcipher/pevm-go/scheduler"
@@ -35,6 +36,9 @@ type Engine interface {
 
 	// Configure updates the engine configuration.
 	Configure(config Config) error
+
+	// SetAccessOracle supplies a custom oracle (e.g., from EIP-2930 or predictors).
+	SetAccessOracle(oracle access.AccessOracle)
 }
 
 // ExecutionOptions contains options for task execution.
@@ -178,6 +182,11 @@ type ParallelEngine struct {
 	// Metrics and monitoring
 	metrics          EngineMetrics
 	metricsCollector *MetricsCollector
+
+	// Access planning & coordination
+	accessOracle access.AccessOracle
+	planner      *access.Planner
+	coordinator  *Coordinator
 
 	// Lifecycle management
 	started bool
@@ -359,9 +368,16 @@ func (pe *ParallelEngine) Execute(ctx context.Context, tasks []common.Task, opti
 	execCtx, cancel := context.WithTimeout(ctx, options.Timeout)
 	defer cancel()
 
-	// Add tasks to scheduler
-	if err := pe.scheduler.AddTasks(tasks); err != nil {
-		return nil, err
+	// Plan access & inject deps, then add wrapped tasks to scheduler
+	if pe.coordinator != nil {
+		if _, err := pe.coordinator.Prepare(execCtx, tasks); err != nil {
+			return nil, err
+		}
+	} else {
+		// Fallback: no planning, just add tasks
+		if err := pe.scheduler.AddTasks(tasks); err != nil {
+			return nil, err
+		}
 	}
 
 	// Wait for execution to complete
@@ -460,6 +476,17 @@ func (pe *ParallelEngine) Configure(config Config) error {
 	return nil
 }
 
+// SetAccessOracle supplies a custom oracle for access planning.
+func (pe *ParallelEngine) SetAccessOracle(oracle access.AccessOracle) {
+	pe.mutex.Lock()
+	defer pe.mutex.Unlock()
+	pe.accessOracle = oracle
+	if pe.started {
+		pe.planner = access.NewPlanner(oracle)
+		pe.coordinator = NewCoordinator(pe.planner, pe.scheduler)
+	}
+}
+
 // Helper methods
 
 // initializeComponents initializes all engine components.
@@ -509,6 +536,14 @@ func (pe *ParallelEngine) initializeComponents() error {
 		EnableProfiling: pe.config.EnableProfiling,
 	}
 	pe.executor = executor.NewParallelExecutor(executorConfig, pe.scheduler, pe.resourceManager)
+
+	// Access planning
+	if pe.accessOracle == nil {
+		// default: empty oracle (no extra deps)
+		pe.accessOracle = access.NewStaticOracle(access.List{}, common.KeyTypeStorage)
+	}
+	pe.planner = access.NewPlanner(pe.accessOracle)
+	pe.coordinator = NewCoordinator(pe.planner, pe.scheduler)
 
 	return nil
 }
